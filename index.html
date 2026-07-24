@@ -84,7 +84,7 @@
 <body>
 
 <header>
-  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v4</small></h1>
+  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v5</small></h1>
   <div class="status"><div class="dot" id="dot"></div><span id="statusText">Připraveno</span></div>
   <div id="timer">00:00</div>
 </header>
@@ -151,6 +151,7 @@
   <button class="small" id="btnTxt">Uložit TXT</button>
   <button class="small" id="btnDoc">Uložit DOC</button>
   <button class="small" id="btnPdf">Tisk / PDF</button>
+  <button class="small" id="btnClear">🗑</button>
 </div>
 
 <footer>
@@ -308,6 +309,10 @@ function b64(buf){
 }
 
 /* ========== audio VÝSTUP: PCM16 @24 kHz ========== */
+function resetOut(){
+  try{ S.outCtx && S.outCtx.close(); }catch(e){}
+  S.outCtx=null; S.gainNode=null; S.playHead=0;
+}
 function ensureOut(){
   if(S.outCtx) return;
   S.outCtx = new (window.AudioContext||window.webkitAudioContext)({sampleRate:24000});
@@ -331,8 +336,12 @@ function playChunk(b64data){
   src.buffer=buf; src.connect(S.gainNode);
   const now=S.outCtx.currentTime;
   if(S.playHead < now+0.05) S.playHead = now+0.05;
+  /* dohánění skluzu: když se fronta hlasu natáhne, mírně zrychlíme */
+  const backlog = S.playHead - now;
+  const rate = backlog>8 ? 1.3 : (backlog>4 ? 1.15 : 1.0);
+  src.playbackRate.value = rate;
   src.start(S.playHead);
-  S.playHead += buf.duration;
+  S.playHead += buf.duration/rate;
 }
 
 /* ========== WebSocket na Gemini Live ========== */
@@ -412,7 +421,9 @@ async function startAll(){
     showErr("Nepodařilo se získat mikrofon: "+e.message+". Zkus v nastavení (⚙) vybrat jiný mikrofon.");
     btnMain.disabled=false; return;
   }
-  ensureOut(); await S.outCtx.resume();
+  resetOut();
+  ensureOut(); /* výstup se vytváří čerstvě při každém startu — vezme si aktuálně připojená sluchátka */
+  await S.outCtx.resume();
   S.wantRun=true;
   S.sent=0; S.recv=0; updDiag();
   if(!S.startTime) S.startTime=Date.now();
@@ -486,23 +497,51 @@ $("btnTxt").onclick=()=>{
   }
   download("prepis_"+stamp()+".txt", new Blob([t],{type:"text/plain;charset=utf-8"}));
 };
-function htmlDoc(){
+function htmlDoc(withBtn){
   let rows="";
-  for(const r of pairs()){
-    rows+=`<tr><td style="color:#888;white-space:nowrap">${fmtT(r.t)}</td><td>${esc(r.en)}</td><td><b>${esc(r.cs)}</b></td></tr>`;
+  const pr=pairs();
+  for(let i=0;i<pr.length;i++){
+    const r=pr[i];
+    rows+=`<tr${i%2? ' class="alt"':''}><td class="t">${fmtT(r.t)}</td><td class="en">${esc(r.en)}</td><td class="cs">${esc(r.cs)}</td></tr>`;
   }
-  return `<html><head><meta charset="utf-8"><title>Přepis tlumočení</title>
-  <style>body{font-family:Georgia,serif;margin:2cm}h1{font-size:18pt}table{border-collapse:collapse;width:100%}
-  td{border-bottom:1px solid #ccc;padding:6px 8px;vertical-align:top;font-size:11pt}</style></head>
-  <body><h1>Přepis tlumočení — ${new Date().toLocaleString("cs-CZ")}</h1>
-  <table><tr><th>Čas</th><th>Originál</th><th>Překlad</th></tr>${rows}</table></body></html>`;
+  const dur = pr.length? fmtT(pr[pr.length-1].t) : "00:00";
+  const btn = withBtn? `<div class="noprint" style="text-align:center;margin:14px 0">
+      <button onclick="window.print()" style="font-size:16px;padding:12px 26px;border-radius:10px;border:none;background:#1a73e8;color:#fff;cursor:pointer">🖨 Vytisknout / Uložit jako PDF</button>
+      <div style="color:#666;font-size:12px;margin-top:6px">V dialogu tisku vyber „Uložit jako PDF“.</div>
+    </div>` : "";
+  return `<!DOCTYPE html><html lang="cs"><head><meta charset="utf-8"><title>Přepis tlumočení</title>
+  <style>
+    body{font-family:Georgia,'Times New Roman',serif;color:#1c2733;margin:0;padding:2cm 2.2cm;}
+    h1{font-size:20pt;margin:0 0 2px;font-weight:700;}
+    .meta{color:#5a6a7a;font-size:10.5pt;margin-bottom:18px;border-bottom:2px solid #1c2733;padding-bottom:10px;}
+    table{border-collapse:collapse;width:100%;}
+    th{text-align:left;font-size:9pt;letter-spacing:1px;text-transform:uppercase;color:#5a6a7a;border-bottom:1.5px solid #1c2733;padding:6px 8px;}
+    td{padding:8px;vertical-align:top;font-size:11pt;line-height:1.5;border-bottom:.5px solid #d7dee5;}
+    tr.alt td{background:#f6f8fa;}
+    td.t{color:#8a97a5;font-size:9pt;white-space:nowrap;font-family:Arial,sans-serif;width:44px;}
+    td.en{color:#43525f;width:44%;}
+    td.cs{font-weight:600;}
+    .noprint{}
+    @media print{.noprint{display:none}}
+  </style></head>
+  <body>${btn}
+  <h1>Přepis tlumočení</h1>
+  <div class="meta">${new Date().toLocaleDateString("cs-CZ",{weekday:"long",day:"numeric",month:"long",year:"numeric"})} · délka záznamu ${dur} · angličtina → čeština</div>
+  <table><tr><th>Čas</th><th>Originál</th><th>Překlad</th></tr>${rows}</table>
+  ${btn}</body></html>`;
 }
 $("btnDoc").onclick=()=>{ flushIn(); flushOut();
-  download("prepis_"+stamp()+".doc", new Blob([htmlDoc()],{type:"application/msword;charset=utf-8"}));
+  download("prepis_"+stamp()+".doc", new Blob([htmlDoc(false)],{type:"application/msword;charset=utf-8"}));
 };
 $("btnPdf").onclick=()=>{ flushIn(); flushOut();
-  const w=window.open("","_blank"); w.document.write(htmlDoc()); w.document.close();
-  setTimeout(()=>w.print(),400);
+  const blob=new Blob([htmlDoc(true)],{type:"text/html;charset=utf-8"});
+  const u=URL.createObjectURL(blob);
+  window.open(u,"_blank");
+};
+$("btnClear").onclick=()=>{
+  if(confirm("Smazat celý přepis a začít nový záznam?")){
+    S.segIn=[]; S.segOut=[]; S.curIn=""; S.curOut=""; S.startTime=Date.now(); render();
+  }
 };
 </script>
 </body>
