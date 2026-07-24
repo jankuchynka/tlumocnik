@@ -84,7 +84,7 @@
 <body>
 
 <header>
-  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v2</small></h1>
+  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v3</small></h1>
   <div class="status"><div class="dot" id="dot"></div><span id="statusText">Připraveno</span></div>
   <div id="timer">00:00</div>
 </header>
@@ -126,6 +126,10 @@
         <option value="1.4">140 %</option>
       </select>
     </div>
+  </div>
+  <div class="field">
+    <button class="small" id="btnTest" style="width:100%">🔑 Otestovat klíč a spojení</button>
+    <div id="testRes" class="hint" style="margin-top:6px"></div>
   </div>
   <p class="hint">Ukazatel 🎤 se musí při řeči hýbat a zezelenat. Pokud se nehýbe, vyber v nabídce jiný mikrofon a spusť znovu. Klíč se ukládá jen v tomto prohlížeči.</p>
 </div>
@@ -353,6 +357,7 @@ function connect(){
     if(raw instanceof Blob) raw = await raw.text();
     let m; try{ m=JSON.parse(raw); }catch(e){ return; }
     S.recv++; updDiag();
+    if(m.error){ showErr("Chyba serveru: "+(m.error.message||JSON.stringify(m.error))); }
     const c=m.serverContent;
     if(!c) return;
     if(c.inputTranscription && c.inputTranscription.text) pushIn(c.inputTranscription.text);
@@ -367,6 +372,9 @@ function connect(){
   S.ws.onclose=ev=>{
     if(S.wantRun){
       S.reconnects++;
+      if(ev.code!==1000 || ev.reason){
+        showErr("Server zavřel spojení — kód "+ev.code+(ev.reason?(": "+ev.reason):"")+" (pokus "+S.reconnects+")");
+      }
       if(S.reconnects<=20){
         setStatus("Znovu se připojuji…","err");
         setTimeout(()=>{ if(S.wantRun) connect(); }, Math.min(1000*S.reconnects, 5000));
@@ -427,6 +435,27 @@ btnMain.onclick=()=>{ S.wantRun ? stopAll() : startAll(); };
 $("btnSettings").onclick=()=>$("settings").classList.toggle("hidden");
 $("vol").onchange=()=>{ if(S.gainNode) S.gainNode.gain.value=parseFloat($("vol").value)||1; };
 fillMics();
+
+/* ========== test klíče ========== */
+$("btnTest").onclick=async ()=>{
+  const res=$("testRes");
+  const key=$("apiKey").value.trim();
+  if(!key){ res.textContent="Nejdřív vlož klíč do pole výše."; return; }
+  res.textContent="Testuji klíč…";
+  try{
+    const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models?key="+encodeURIComponent(key));
+    const j=await r.json();
+    if(r.ok && j.models){
+      const hasLT = j.models.some(mm=>(mm.name||"").includes("live-translate"));
+      res.textContent="✅ Klíč je platný ("+j.models.length+" modelů). "+
+        (hasLT ? "Model live-translate je dostupný." : "⚠️ Model live-translate v seznamu chybí — právě to může být příčina odpojování.");
+    }else{
+      res.textContent="❌ Klíč Google odmítl: "+((j.error&&j.error.message)||("HTTP "+r.status));
+    }
+  }catch(e){
+    res.textContent="❌ Test se nepodařil: "+e.message;
+  }
+};
 
 /* ========== export ========== */
 function pairs(){
