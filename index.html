@@ -84,7 +84,7 @@
 <body>
 
 <header>
-  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v5</small></h1>
+  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v6</small></h1>
   <div class="status"><div class="dot" id="dot"></div><span id="statusText">Připraveno</span></div>
   <div id="timer">00:00</div>
 </header>
@@ -245,7 +245,17 @@ $("micSel").onchange=()=>store("tlm_mic",$("micSel").value);
    a sami převzorkujeme na 16000 Hz — funguje na všech kartách. */
 async function startMic(){
   const constraints={audio:{ channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:true }};
-  const micId=$("micSel").value;
+  let micId=$("micSel").value;
+  if(!micId){
+    /* bez ruční volby vybereme vestavěný mikrofon telefonu — mikrofon v BT sluchátkách
+       by Androidu pozastavil hudební kanál a čeština by nešla do sluchátek */
+    try{
+      const devs=await navigator.mediaDevices.enumerateDevices();
+      const ins=devs.filter(d=>d.kind==="audioinput");
+      const builtin=ins.find(d=>d.label && !/bluetooth|headset|hands|sco|freelace|airpod|sluch|m98|náhlav/i.test(d.label));
+      if(builtin) micId=builtin.deviceId;
+    }catch(e){}
+  }
   if(micId) constraints.audio.deviceId={exact:micId};
   S.micStream = await navigator.mediaDevices.getUserMedia(constraints);
   fillMics(); // teď už máme oprávnění → načteme názvy zařízení
