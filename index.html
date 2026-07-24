@@ -30,6 +30,14 @@
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(102,187,106,.5);}70%{box-shadow:0 0 0 9px rgba(102,187,106,0);}100%{box-shadow:0 0 0 0 rgba(102,187,106,0);}}
   #timer{font-variant-numeric:tabular-nums; font-size:13px; color:var(--muted);}
 
+  /* Ukazatel mikrofonu */
+  #meterWrap{padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel); flex-shrink:0; display:flex; align-items:center; gap:10px;}
+  #meterWrap .mlabel{font-size:12px; color:var(--muted); white-space:nowrap;}
+  #meterBar{flex:1; height:14px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; overflow:hidden;}
+  #meterFill{height:100%; width:0%; background:var(--err); transition:width .08s linear;}
+  #meterFill.good{background:var(--ok);}
+  #diag{font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap;}
+
   /* Nastavení */
   #settings{padding:12px 14px; border-bottom:1px solid var(--line); background:var(--panel); flex-shrink:0;}
   #settings.hidden{display:none;}
@@ -42,7 +50,6 @@
   .row2{display:flex; gap:10px;}
   .row2 .field{flex:1;}
   .hint{font-size:12px; color:var(--muted); line-height:1.45;}
-  .hint a{color:var(--accent2);}
 
   /* Přepisy */
   main{flex:1; display:flex; flex-direction:column; min-height:0;}
@@ -77,15 +84,25 @@
 <body>
 
 <header>
-  <h1>Tlumočník <span>EN → CS</span></h1>
+  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v2</small></h1>
   <div class="status"><div class="dot" id="dot"></div><span id="statusText">Připraveno</span></div>
   <div id="timer">00:00</div>
 </header>
+
+<div id="meterWrap">
+  <span class="mlabel">🎤 Mikrofon</span>
+  <div id="meterBar"><div id="meterFill"></div></div>
+  <span id="diag">▲0 ▼0</span>
+</div>
 
 <div id="settings">
   <div class="field">
     <label>API klíč (z aistudio.google.com/apikey)</label>
     <input type="password" id="apiKey" placeholder="Vlož svůj Gemini API klíč" autocomplete="off">
+  </div>
+  <div class="field">
+    <label>Mikrofon (naplní se po prvním povolení)</label>
+    <select id="micSel"><option value="">Výchozí mikrofon systému</option></select>
   </div>
   <div class="row2">
     <div class="field">
@@ -110,7 +127,7 @@
       </select>
     </div>
   </div>
-  <p class="hint">Klíč se ukládá jen v tomto prohlížeči. Zvuk jde do aktuálně připojených sluchátek. Po spuštění nech obrazovku zapnutou (aplikace jí brání zhasnout).</p>
+  <p class="hint">Ukazatel 🎤 se musí při řeči hýbat a zezelenat. Pokud se nehýbe, vyber v nabídce jiný mikrofon a spusť znovu. Klíč se ukládá jen v tomto prohlížeči.</p>
 </div>
 
 <div id="msg"></div>
@@ -142,32 +159,36 @@
 
 /* ========== stav ========== */
 const S = {
-  ws:null, running:false, wantRun:false,
+  ws:null, wantRun:false,
   micStream:null, inCtx:null, proc:null, srcNode:null,
   outCtx:null, playHead:0, gainNode:null,
   startTime:0, timerInt:null,
   wakeLock:null,
-  segIn:[], segOut:[],          // {t: sekundy od startu, text}
+  segIn:[], segOut:[],
   curIn:"", curOut:"",
   reconnects:0,
+  sent:0, recv:0,
+  resampleRest:null,
 };
 
 const $ = id => document.getElementById(id);
 const dot=$("dot"), statusText=$("statusText"), timerEl=$("timer");
 const inText=$("inText"), outText=$("outText"), msgEl=$("msg");
-const btnMain=$("btnMain");
+const btnMain=$("btnMain"), meterFill=$("meterFill"), diag=$("diag");
 
-/* ========== uložení klíče (bezpečně, s fallbackem) ========== */
+/* ========== uložení nastavení ========== */
 function store(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 function load(k){ try{ return localStorage.getItem(k)||""; }catch(e){ return ""; } }
 $("apiKey").value = load("tlm_key");
-if($("lang")) $("lang").value = load("tlm_lang") || "cs";
+if(load("tlm_lang")) $("lang").value = load("tlm_lang");
 
 /* ========== UI pomocné ========== */
 function setStatus(txt, cls){ statusText.textContent = txt; dot.className = "dot"+(cls?" "+cls:""); }
 function showErr(t){ msgEl.textContent = t; msgEl.style.display = t?"block":"none"; }
 function fmtT(s){ const m=Math.floor(s/60), ss=Math.floor(s%60); return String(m).padStart(2,"0")+":"+String(ss).padStart(2,"0"); }
 function tick(){ timerEl.textContent = fmtT((Date.now()-S.startTime)/1000); }
+function updDiag(){ diag.textContent = "▲"+S.sent+" ▼"+S.recv; }
+function esc(t){ return t.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 function render(){
   const rIn = S.segIn.map(s=>`<p>${esc(s.text)}</p>`).join("") + (S.curIn?`<p style="color:var(--muted)">${esc(S.curIn)}</p>`:"");
@@ -177,9 +198,7 @@ function render(){
   inText.scrollTop = inText.scrollHeight;
   outText.scrollTop= outText.scrollHeight;
 }
-function esc(t){ return t.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
-/* Přepis chodí po kouscích; větu uzavíráme po tečce/otazníku nebo delší pauze */
 let flushTimerIn=null, flushTimerOut=null;
 function pushIn(t){
   S.curIn += t;
@@ -198,24 +217,76 @@ function pushOut(t){
 }
 function flushOut(){ if(S.curOut.trim()){ S.segOut.push({t:(Date.now()-S.startTime)/1000, text:S.curOut.trim()}); S.curOut=""; render(); } }
 
-/* ========== audio VSTUP: mikrofon -> PCM16 @16 kHz ========== */
+/* ========== seznam mikrofonů ========== */
+async function fillMics(){
+  try{
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const mics = devs.filter(d=>d.kind==="audioinput");
+    const sel=$("micSel"); const saved=load("tlm_mic");
+    sel.innerHTML='<option value="">Výchozí mikrofon systému</option>';
+    for(const m of mics){
+      const o=document.createElement("option");
+      o.value=m.deviceId; o.textContent=m.label||("Mikrofon "+(sel.length));
+      if(m.deviceId===saved) o.selected=true;
+      sel.appendChild(o);
+    }
+  }catch(e){}
+}
+$("micSel").onchange=()=>store("tlm_mic",$("micSel").value);
+
+/* ========== audio VSTUP ========== */
+/* Bereme zvuk v přirozené frekvenci zvukové karty (např. 48000 Hz)
+   a sami převzorkujeme na 16000 Hz — funguje na všech kartách. */
 async function startMic(){
-  S.micStream = await navigator.mediaDevices.getUserMedia({audio:{
-    channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:true
-  }});
-  S.inCtx = new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+  const constraints={audio:{ channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:true }};
+  const micId=$("micSel").value;
+  if(micId) constraints.audio.deviceId={exact:micId};
+  S.micStream = await navigator.mediaDevices.getUserMedia(constraints);
+  fillMics(); // teď už máme oprávnění → načteme názvy zařízení
+  S.inCtx = new (window.AudioContext||window.webkitAudioContext)(); // přirozená frekvence
   await S.inCtx.resume();
   S.srcNode = S.inCtx.createMediaStreamSource(S.micStream);
-  S.proc = S.inCtx.createScriptProcessor(2048, 1, 1); // ~128 ms
+  S.proc = S.inCtx.createScriptProcessor(4096, 1, 1);
+  const srcRate = S.inCtx.sampleRate;
+  S.resampleRest = null;
   S.proc.onaudioprocess = e=>{
-    if(!S.ws || S.ws.readyState!==1) return;
     const f32 = e.inputBuffer.getChannelData(0);
-    const i16 = new Int16Array(f32.length);
-    for(let i=0;i<f32.length;i++){ const v=Math.max(-1,Math.min(1,f32[i])); i16[i] = v<0 ? v*0x8000 : v*0x7FFF; }
+    /* ukazatel hlasitosti */
+    let peak=0;
+    for(let i=0;i<f32.length;i+=8){ const a=Math.abs(f32[i]); if(a>peak) peak=a; }
+    const pct=Math.min(100, Math.round(peak*180));
+    meterFill.style.width=pct+"%";
+    meterFill.className = pct>8 ? "good" : "";
+    if(!S.ws || S.ws.readyState!==1) return;
+    /* převzorkování na 16 kHz */
+    const down = resampleTo16k(f32, srcRate);
+    if(!down.length) return;
+    const i16 = new Int16Array(down.length);
+    for(let i=0;i<down.length;i++){ const v=Math.max(-1,Math.min(1,down[i])); i16[i] = v<0 ? v*0x8000 : v*0x7FFF; }
     S.ws.send(JSON.stringify({realtimeInput:{audio:{data:b64(i16.buffer), mimeType:"audio/pcm;rate=16000"}}}));
+    S.sent++; if(S.sent%5===0) updDiag();
   };
   S.srcNode.connect(S.proc);
-  S.proc.connect(S.inCtx.destination); // nutné, aby procesor běžel (výstup je ticho z mikrofonu se nepřehrává)
+  S.proc.connect(S.inCtx.destination);
+}
+function resampleTo16k(f32, srcRate){
+  if(srcRate===16000) return f32;
+  const ratio = srcRate/16000;
+  let buf = f32;
+  if(S.resampleRest && S.resampleRest.length){
+    const merged=new Float32Array(S.resampleRest.length+f32.length);
+    merged.set(S.resampleRest); merged.set(f32,S.resampleRest.length);
+    buf=merged;
+  }
+  const outLen = Math.floor(buf.length/ratio);
+  const out = new Float32Array(outLen);
+  for(let i=0;i<outLen;i++){
+    const pos=i*ratio, i0=Math.floor(pos), i1=Math.min(i0+1, buf.length-1), fr=pos-i0;
+    out[i] = buf[i0]*(1-fr)+buf[i1]*fr;
+  }
+  const used=Math.floor(outLen*ratio);
+  S.resampleRest = buf.subarray(used);
+  return out;
 }
 function stopMic(){
   try{ S.proc && S.proc.disconnect(); }catch(e){}
@@ -223,6 +294,7 @@ function stopMic(){
   try{ S.micStream && S.micStream.getTracks().forEach(t=>t.stop()); }catch(e){}
   try{ S.inCtx && S.inCtx.close(); }catch(e){}
   S.proc=S.srcNode=S.micStream=S.inCtx=null;
+  meterFill.style.width="0%";
 }
 function b64(buf){
   const u8=new Uint8Array(buf); let s=""; const CH=0x8000;
@@ -230,7 +302,7 @@ function b64(buf){
   return btoa(s);
 }
 
-/* ========== audio VÝSTUP: PCM16 @24 kHz -> sluchátka ========== */
+/* ========== audio VÝSTUP: PCM16 @24 kHz ========== */
 function ensureOut(){
   if(S.outCtx) return;
   S.outCtx = new (window.AudioContext||window.webkitAudioContext)({sampleRate:24000});
@@ -280,6 +352,7 @@ function connect(){
     let raw = ev.data;
     if(raw instanceof Blob) raw = await raw.text();
     let m; try{ m=JSON.parse(raw); }catch(e){ return; }
+    S.recv++; updDiag();
     const c=m.serverContent;
     if(!c) return;
     if(c.inputTranscription && c.inputTranscription.text) pushIn(c.inputTranscription.text);
@@ -293,7 +366,6 @@ function connect(){
   S.ws.onerror=()=>{};
   S.ws.onclose=ev=>{
     if(S.wantRun){
-      /* automatické znovupřipojení — přepis zůstává */
       S.reconnects++;
       if(S.reconnects<=20){
         setStatus("Znovu se připojuji…","err");
@@ -306,7 +378,7 @@ function connect(){
   };
 }
 
-/* ========== wake lock (nezhasínat displej) ========== */
+/* ========== wake lock ========== */
 async function keepAwake(){
   try{ S.wakeLock = await navigator.wakeLock.request("screen");
        S.wakeLock.addEventListener("release",()=>{ if(S.wantRun) keepAwake(); });
@@ -324,11 +396,12 @@ async function startAll(){
   try{
     await startMic();
   }catch(e){
-    showErr("Nepodařilo se získat mikrofon: "+e.message+". Povol mikrofon v nastavení prohlížeče.");
+    showErr("Nepodařilo se získat mikrofon: "+e.message+". Zkus v nastavení (⚙) vybrat jiný mikrofon.");
     btnMain.disabled=false; return;
   }
   ensureOut(); await S.outCtx.resume();
   S.wantRun=true;
+  S.sent=0; S.recv=0; updDiag();
   if(!S.startTime) S.startTime=Date.now();
   S.timerInt=setInterval(tick,500);
   keepAwake();
@@ -353,10 +426,10 @@ function stopAll(clearWant=true){
 btnMain.onclick=()=>{ S.wantRun ? stopAll() : startAll(); };
 $("btnSettings").onclick=()=>$("settings").classList.toggle("hidden");
 $("vol").onchange=()=>{ if(S.gainNode) S.gainNode.gain.value=parseFloat($("vol").value)||1; };
+fillMics();
 
 /* ========== export ========== */
 function pairs(){
-  /* jednoduché spárování podle času */
   const rows=[];
   const a=[...S.segIn], b=[...S.segOut];
   const n=Math.max(a.length,b.length);
