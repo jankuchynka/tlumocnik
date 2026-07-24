@@ -84,7 +84,7 @@
 <body>
 
 <header>
-  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v3</small></h1>
+  <h1>Tlumočník <span>EN → CS</span> <small style="font-size:11px;color:var(--muted)">v4</small></h1>
   <div class="status"><div class="dot" id="dot"></div><span id="statusText">Připraveno</span></div>
   <div id="timer">00:00</div>
 </header>
@@ -173,6 +173,7 @@ const S = {
   reconnects:0,
   sent:0, recv:0,
   resampleRest:null,
+  cfgVariant:0,
 };
 
 const $ = id => document.getElementById(id);
@@ -340,15 +341,18 @@ function connect(){
   const url="wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(key);
   S.ws=new WebSocket(url);
   S.ws.onopen=()=>{
-    S.ws.send(JSON.stringify({setup:{
+    /* Varianta 0: přepisy na úrovni setup, translationConfig v generationConfig (dle dokumentace).
+       Varianta 1 (záložní): vše na úrovni setup. Přepne se samo podle chybové hlášky. */
+    const setup={
       model:"models/gemini-3.5-live-translate-preview",
-      generationConfig:{
-        responseModalities:["AUDIO"],
-        inputAudioTranscription:{},
-        outputAudioTranscription:{},
-        translationConfig:{ targetLanguageCode:$("lang").value, echoTargetLanguage:false }
-      }
-    }}));
+      generationConfig:{ responseModalities:["AUDIO"] },
+      inputAudioTranscription:{},
+      outputAudioTranscription:{}
+    };
+    const tc={ targetLanguageCode:$("lang").value, echoTargetLanguage:false };
+    if(S.cfgVariant===1) setup.translationConfig=tc;
+    else setup.generationConfig.translationConfig=tc;
+    S.ws.send(JSON.stringify({setup:setup}));
     setStatus("Tlumočí se","live");
     S.reconnects=0;
   };
@@ -372,6 +376,7 @@ function connect(){
   S.ws.onclose=ev=>{
     if(S.wantRun){
       S.reconnects++;
+      if(ev.reason && /translation_?config/i.test(ev.reason)){ S.cfgVariant = S.cfgVariant===0 ? 1 : 0; }
       if(ev.code!==1000 || ev.reason){
         showErr("Server zavřel spojení — kód "+ev.code+(ev.reason?(": "+ev.reason):"")+" (pokus "+S.reconnects+")");
       }
