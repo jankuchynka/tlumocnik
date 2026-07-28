@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Tlumočník — živý překlad do češtiny</title>
+
+<!-- PWA: instalace na plochu telefonu -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0e1216">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tlumočník">
 <style>
   :root{
     --bg:#0e1216; --panel:#161c22; --panel2:#1b232b; --line:#28323c;
@@ -553,6 +563,18 @@ $("btnClear").onclick=()=>{
     S.segIn=[]; S.segOut=[]; S.curIn=""; S.curOut=""; S.startTime=Date.now(); render();
   }
 };
+</script>
+
+<script>
+/* ========== registrace service workeru (jen kvůli instalaci na plochu) ==========
+   Service worker se stará výhradně o soubory samotné aplikace. Do tlumočení
+   nezasahuje — WebSocket, mikrofon ani volání Gemini přes něj vůbec nejdou.
+   Když se registrace nepovede, aplikace běží dál úplně stejně jako předtím. */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
